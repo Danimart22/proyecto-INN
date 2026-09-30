@@ -1,0 +1,12 @@
+# Dependencias de Popular Ambiental v2
+# Instalar con: python -m pip install -r requirements.txt
+
+pandas>=2.0.0
+numpy>=1.24.0
+streamlit>=1.32.0
+flask>=3.0.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+
+# Bot de Telegram (version 13.x por compatibilidad con Python 3.14)
+python-telegram-bot==21.6
