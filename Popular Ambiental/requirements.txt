@@ -1,4 +1,4 @@
-# Dependencias de Popular Ambiental v2
+# Dependencias de Popular Ambiental 
 # Instalar con: python -m pip install -r requirements.txt
 
 pandas>=2.0.0
@@ -10,3 +10,5 @@ python-dotenv>=1.0.0
 
 # Bot de Telegram (version 13.x por compatibilidad con Python 3.14)
 python-telegram-bot==21.6
+
+anthropic>=0.30.0

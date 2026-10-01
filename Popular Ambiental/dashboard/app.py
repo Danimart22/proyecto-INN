@@ -208,28 +208,26 @@ def mostrar_tabla_riesgos(df: pd.DataFrame, titulo: str = "Riesgos por barrio"):
         "barrio":                "Barrio",
         "lluvia_24h_mm":         "Lluvia 24h (mm)",
         "nivel_inundacion":      "Inundacion",
-        "indice_inundacion":     "Pts. Inundacion",
+        "indice_inundacion":     "Pts",
         "nivel_derrumbe":        "Derrumbe",
-        "indice_derrumbe":       "Pts. Derrumbe",
+        "indice_derrumbe":       "Pts",
         "nivel_arrastre_basura": "Arrastre basura",
-        "indice_arrastre_basura":"Pts. Arrastre",
+        "indice_arrastre_basura":"Pts",
         "nivel_riesgo_general":  "General",
-        "indice_riesgo_general": "Pts. General"
+        "indice_riesgo_general": "Pts"
     }
 
     df_tabla = df[columnas].rename(columns=nombres)
 
     columnas_nivel = ["Inundacion", "Derrumbe", "Arrastre basura", "General"]
-    columnas_pts = ["Pts. Inundacion", "Pts. Derrumbe", "Pts. Arrastre", "Pts. General"]
-
-    formato = {col: "{:.1f}" for col in columnas_pts}
-    formato["Lluvia 24h (mm)"] = "{:.1f}"
-
     tabla_estilizada = df_tabla.style.map(
         colorear_nivel, subset=columnas_nivel
-    ).format(formato)
+    ).format({
+        "Pts": "{:.1f}",
+        "Lluvia 24h (mm)": "{:.1f}"
+    })
 
-    st.dataframe(tabla_estilizada, width="stretch", hide_index=True)
+    st.dataframe(tabla_estilizada, use_container_width=True, hide_index=True)
 
 
 def mostrar_alertas_activas(processor: DataProcessor):
@@ -247,18 +245,28 @@ def mostrar_alertas_activas(processor: DataProcessor):
         return
 
     for alerta in alertas:
-        color = COLOR_NIVEL["ALTO"]
+        # El borde usa el color del nivel real del barrio.
+        # El fondo y el texto tienen colores fijos para que sean legibles
+        # tanto en modo claro como en modo oscuro de Streamlit.
+        nivel  = alerta["nivel_general"]
+        color  = COLOR_NIVEL.get(nivel, "#888888")
         tipos_str = " | ".join(alerta["tipos_alerta"])
         st.markdown(
-            f"<div style='border-left: 4px solid {color}; "
-            f"padding: 8px 14px; margin-bottom: 8px; "
-            f"background-color: #fff5f5; border-radius: 4px;'>"
-            f"<b>{alerta['barrio']}</b> &nbsp; "
+            f"<div style='"
+            f"border-left: 4px solid {color}; "
+            f"padding: 10px 16px; margin-bottom: 8px; "
+            f"background-color: #1e1e2e; "
+            f"border-radius: 4px;'>"
+            f"<span style='color:#ffffff; font-weight:bold; font-size:15px;'>"
+            f"{alerta['barrio']}</span>"
+            f"&nbsp;&nbsp;"
             f"<span style='color:{color}; font-weight:bold;'>"
-            f"Riesgo {alerta['nivel_general']}</span><br>"
-            f"<small>Tipos: {tipos_str} &nbsp;|&nbsp; "
+            f"Riesgo {nivel}</span><br>"
+            f"<span style='color:#cccccc; font-size:13px;'>"
+            f"Tipos: {tipos_str} &nbsp;|&nbsp; "
             f"Lluvia 24h: {alerta['lluvia_24h_mm']} mm &nbsp;|&nbsp; "
-            f"Indice: {alerta['indice_general']} / 100</small>"
+            f"Indice: {alerta['indice_general']} / 100"
+            f"</span>"
             f"</div>",
             unsafe_allow_html=True
         )
@@ -317,9 +325,13 @@ def mostrar_consulta_barrio(processor: DataProcessor):
     c3.metric("Dist. Quebrada", f"{resultado.get('distancia_quebrada_m', 'N/A')} m")
 
     c4, c5, c6 = st.columns(3)
-    c4.metric("Pendiente", f"{resultado.get('pendiente_grados', 'N/A')} grados")
-    c5.metric("Cobertura vegetal", f"{resultado.get('cobertura_vegetal_pct', 'N/A')} %")
-    c6.metric("Puntos criticos basura", resultado.get("puntos_criticos_basura", "N/A"))
+    c4.metric("Pendiente promedio", f"{resultado.get('pendiente_promedio_grados', 'N/A')} grados")
+    c5.metric("Pendiente maxima",   f"{resultado.get('pendiente_max_grados', 'N/A')} grados")
+    c6.metric("Pendiente minima",   f"{resultado.get('pendiente_min_grados', 'N/A')} grados")
+
+    c7, c8, _ = st.columns(3)
+    c7.metric("Cobertura vegetal",     f"{resultado.get('cobertura_vegetal_pct', 'N/A')} %")
+    c8.metric("Puntos criticos basura", resultado.get("puntos_criticos_basura", "N/A"))
 
 
 def main():

@@ -15,21 +15,26 @@ def mensaje_bienvenida() -> str:
     """
     Mensaje de bienvenida que se envia al escribir 'hola' o '/start'.
 
-    Explica el sistema en terminos que entienda cualquier habitante
-    de la comuna, sin usar jerga tecnica de datos o programacion.
+    Presenta primero los comandos en lenguaje sencillo (IA) y luego
+    los tecnicos, para que la comunidad use los primeros por defecto.
     """
     return (
         "Bienvenido a Popular Ambiental\n"
         "Sistema de alertas por lluvias - Comuna 1 Popular, Medellin\n\n"
-        "Te informo sobre el riesgo de inundaciones, derrumbes y arrastre\n"
+        "Te cuento sobre el riesgo de inundaciones, derrumbes y arrastre\n"
         "de basura en tu barrio cuando llueve fuerte.\n\n"
-        "Comandos disponibles:\n"
-        "  resumen      -- estado actual de toda la comuna\n"
-        "  alertas      -- barrios con riesgo ALTO en este momento\n"
-        "  top5         -- los 5 barrios con mayor riesgo\n"
-        "  barrio [nombre] -- detalle de un barrio especifico\n"
-        "  ayuda        -- muestra este mensaje\n\n"
-        "Ejemplo: barrio granizal"
+        "Para entender que esta pasando (en lenguaje sencillo):\n"
+        "  que pasa              -- como esta la comuna ahora mismo\n"
+        "  que pasa en [barrio]  -- como esta tu barrio especifico\n"
+        "  alertas               -- barrios en peligro en este momento\n\n"
+        "Para ver los datos tecnicos:\n"
+        "  resumen               -- numeros y niveles de riesgo\n"
+        "  top5                  -- los 5 barrios mas criticos\n"
+        "  barrio [nombre]       -- detalle completo de un barrio\n\n"
+        "Ejemplos:\n"
+        "  que pasa en granizal\n"
+        "  que pasa en santo domingo\n"
+        "  barrio carpinelo"
     )
 
 
