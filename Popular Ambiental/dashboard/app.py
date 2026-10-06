@@ -20,6 +20,9 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import streamlit as st
 import pandas as pd
 from utils.data_processor import DataProcessor, UMBRALES_SIATA
@@ -208,27 +211,28 @@ def mostrar_tabla_riesgos(df: pd.DataFrame, titulo: str = "Riesgos por barrio"):
         "barrio":                "Barrio",
         "lluvia_24h_mm":         "Lluvia 24h (mm)",
         "nivel_inundacion":      "Inundacion",
-        "indice_inundacion":     "Pts",
+        "indice_inundacion":     "Pts. Inundacion",
         "nivel_derrumbe":        "Derrumbe",
-        "indice_derrumbe":       "Pts",
+        "indice_derrumbe":       "Pts. Derrumbe",
         "nivel_arrastre_basura": "Arrastre basura",
-        "indice_arrastre_basura":"Pts",
+        "indice_arrastre_basura":"Pts. Arrastre",
         "nivel_riesgo_general":  "General",
-        "indice_riesgo_general": "Pts"
+        "indice_riesgo_general": "Pts. General"
     }
 
     df_tabla = df[columnas].rename(columns=nombres)
 
     columnas_nivel = ["Inundacion", "Derrumbe", "Arrastre basura", "General"]
+    columnas_pts = ["Pts. Inundacion", "Pts. Derrumbe", "Pts. Arrastre", "Pts. General"]
+
+    formato = {col: "{:.1f}" for col in columnas_pts}
+    formato["Lluvia 24h (mm)"] = "{:.1f}"
+
     tabla_estilizada = df_tabla.style.map(
         colorear_nivel, subset=columnas_nivel
-    ).format({
-        "Pts": "{:.1f}",
-        "Lluvia 24h (mm)": "{:.1f}"
-    })
+    ).format(formato)
 
-    st.dataframe(tabla_estilizada, use_container_width=True, hide_index=True)
-
+    st.dataframe(tabla_estilizada, width="stretch", hide_index=True)
 
 def mostrar_alertas_activas(processor: DataProcessor):
     """

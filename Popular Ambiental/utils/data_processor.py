@@ -50,6 +50,26 @@ BARRIOS_COMUNA_1 = [
     "La Avanzada",
     "Carpinelo",
 ]
+# Coordenadas aproximadas del centroide de cada barrio (WGS84).
+# Estimadas a partir de puntos de referencia conocidos (estaciones del
+# Metrocable Linea K, disposicion de barrios segun el POT) -- no son
+# centroides catastrales oficiales. Si se necesita precision para la
+# version final, reemplazar por los centroides del catalogo GIS de
+# Medellin (https://www.medellin.gov.co/giscatalogacion).
+COORDENADAS_BARRIOS = {
+    "Santo Domingo Savio N1": (6.2932, -75.5417),
+    "Santo Domingo Savio N2": (6.2948, -75.5428),
+    "El Popular":             (6.2878, -75.5463),
+    "Granizal":                (6.2981, -75.5392),
+    "Moscu N2":                (6.2865, -75.5492),
+    "Villa Guadalupe":         (6.2903, -75.5478),
+    "San Pablo":               (6.2891, -75.5447),
+    "El Compromiso":           (6.2957, -75.5386),
+    "Aldea Pablo VI":          (6.2969, -75.5405),
+    "La Esperanza N2":         (6.2920, -75.5365),
+    "La Avanzada":             (6.3002, -75.5437),
+    "Carpinelo":               (6.3038, -75.5415),
+}
 
 # Distancias aproximadas de cada barrio a la quebrada mas cercana en metros.
 # Estimadas a partir de la cartografia del IGAC y el SIG de Medellin.
@@ -177,6 +197,10 @@ class DataProcessor:
         El DataFrame siempre tiene las mismas columnas sin importar el origen,
         lo que garantiza que el resto del sistema funcione igual en los dos modos.
 
+        Guarda en self.fuente_datos cual fue el origen realmente usado
+        ("api" o "simulados"), para que el resto del sistema (o el dashboard)
+        pueda mostrarlo si hace falta.
+
         Columnas del resultado:
             barrio                 -- nombre del barrio
             lluvia_24h_mm          -- precipitacion ultimas 24 horas (mm)
@@ -196,7 +220,11 @@ class DataProcessor:
         if self.modo_produccion:
             try:
                 df = self._cargar_desde_api()
-                logger.info("Datos cargados desde SIATA / Datos Abiertos Medellin")
+                self.fuente_datos = "api"
+                logger.info(
+                    "FUENTE DE DATOS: API (Open-Meteo, lluvia real por barrio) -- "
+                    f"{len(BARRIOS_COMUNA_1)} barrios actualizados."
+                )
                 self._guardar_cache(df)
                 self.datos = df
                 self.ultima_actualizacion = datetime.now()
@@ -205,7 +233,16 @@ class DataProcessor:
                 logger.warning(f"API no disponible ({e}). Usando datos simulados.")
 
         df = self._generar_datos_simulados()
-        logger.info(f"Datos simulados generados para {len(BARRIOS_COMUNA_1)} barrios de la Comuna 1")
+        self.fuente_datos = "simulados"
+        motivo = (
+            "modo_produccion desactivado"
+            if not self.modo_produccion
+            else "fallback por error en la API"
+        )
+        logger.info(
+            f"FUENTE DE DATOS: SIMULADOS para {len(BARRIOS_COMUNA_1)} barrios "
+            f"de la Comuna 1 ({motivo})"
+        )
         self.datos = df
         self.ultima_actualizacion = datetime.now()
         return df
@@ -272,21 +309,74 @@ class DataProcessor:
 
     def _cargar_desde_api(self) -> pd.DataFrame:
         """
-        Intenta obtener datos en tiempo real del SIATA y Datos Abiertos.
+        Obtiene lluvia real de Open-Meteo, una estacion POR BARRIO en vez de
+        un solo punto para toda la comuna. Las variables de terreno se
+        mantienen calibradas porque requieren procesamiento GIS especializado.
 
-        En produccion real se conectaria a:
-        - siata.gov.co/lluvia: datos de lluvia por estacion en tiempo casi real
-        - datosabiertos.medellin.gov.co: puntos criticos y eventos de riesgo
-
-        El timeout de 10s evita que la app quede colgada esperando una
-        respuesta que nunca llega si el servidor tiene problemas.
+        Open-Meteo acepta listas de coordenadas separadas por coma en una sola
+        peticion (&latitude=a,b,c&longitude=x,y,z) y devuelve una lista de
+        resultados en el mismo orden -- por eso las listas se arman siguiendo
+        el orden de BARRIOS_COMUNA_1, para poder volver a emparejar cada
+        resultado con su barrio despues.
         """
-        url = "https://api.siata.gov.co/lluvia/barrios/comuna1"
-        respuesta = requests.get(url, timeout=10)
-        respuesta.raise_for_status()
-        datos = respuesta.json().get("barrios", [])
-        return pd.DataFrame(datos)
+        lats = ",".join(str(COORDENADAS_BARRIOS[b][0]) for b in BARRIOS_COMUNA_1)
+        lons = ",".join(str(COORDENADAS_BARRIOS[b][1]) for b in BARRIOS_COMUNA_1)
 
+        url = "https://api.open-meteo.com/v1/forecast"
+        params = {
+            "latitude":      lats,
+            "longitude":     lons,
+            "hourly":        "precipitation",
+            "past_days":     30,   # permite calcular 24h, 72h y 30d reales
+            "forecast_days": 0,
+            "timezone":      "America/Bogota"
+        }
+        respuesta = requests.get(url, params=params, timeout=15)
+        respuesta.raise_for_status()
+        resultados = respuesta.json()
+
+        # Con una sola coordenada Open-Meteo devuelve un dict; con varias,
+        # devuelve una lista de dicts en el mismo orden en que se pidieron.
+        if isinstance(resultados, dict):
+            resultados = [resultados]
+
+        lluvia_24h_por_barrio = []
+        lluvia_72h_por_barrio = []
+        lluvia_30d_por_barrio = []
+
+        for resultado_barrio in resultados:
+            horas       = resultado_barrio["hourly"]["time"]
+            lluvia_hora = resultado_barrio["hourly"]["precipitation"]
+
+            df_clima = pd.DataFrame({"hora": horas, "lluvia_mm": lluvia_hora})
+            df_clima["hora"] = pd.to_datetime(df_clima["hora"])
+            df_clima = df_clima.set_index("hora")
+
+            fin = df_clima.index.max()
+            lluvia_24h_por_barrio.append(
+                float(df_clima[df_clima.index > fin - pd.Timedelta(hours=24)]["lluvia_mm"].sum())
+            )
+            lluvia_72h_por_barrio.append(
+                float(df_clima[df_clima.index > fin - pd.Timedelta(hours=72)]["lluvia_mm"].sum())
+            )
+            lluvia_30d_por_barrio.append(
+                float(df_clima["lluvia_mm"].sum())
+            )
+
+        # Tomar la base simulada (terreno, puntos criticos, etc.) y sobreescribir
+        # solo las columnas de lluvia -- ahora con un valor real POR BARRIO en
+        # vez de un unico valor repetido para toda la comuna.
+        df = self._generar_datos_simulados()
+        df["lluvia_24h_mm"] = [round(v, 1) for v in lluvia_24h_por_barrio]
+        df["lluvia_72h_mm"] = [round(v, 1) for v in lluvia_72h_por_barrio]
+        df["lluvia_30d_mm"] = [round(v, 1) for v in lluvia_30d_por_barrio]
+        df["fecha_corte"]   = pd.Timestamp.now(tz="America/Bogota").strftime("%Y-%m-%d")
+
+        logger.info(
+            f"Lluvia real obtenida de Open-Meteo para {len(BARRIOS_COMUNA_1)} barrios. "
+            f"Promedio 24h: {sum(lluvia_24h_por_barrio)/len(lluvia_24h_por_barrio):.1f}mm"
+        )
+        return df
     def _guardar_cache(self, df: pd.DataFrame) -> None:
         """
         Guarda una copia local de los datos descargados de la API.
