@@ -1,9 +1,11 @@
 """
-Tests de las dos funciones principales del sistema.
+Tests de las funciones principales del sistema.
 
 Se usa unittest de la libreria estandar para no requerir instalaciones
-adicionales. Cada test verifica una condicion concreta y tiene un mensaje
-de error que explica exactamente que fallo y por que importa.
+adicionales (unittest.mock, incluido en la libreria estandar, se usa para
+simular las respuestas de Open-Meteo sin depender de internet). Cada test
+verifica una condicion concreta y tiene un mensaje de error que explica
+exactamente que fallo y por que importa.
 
 Para correr:
     python tests/test_core.py
@@ -13,13 +15,16 @@ Para correr:
 import sys
 import os
 import unittest
+from unittest.mock import patch, MagicMock
 import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import utils.data_processor as dp_module
 from utils.data_processor import (
     DataProcessor,
     BARRIOS_COMUNA_1,
+    COORDENADAS_BARRIOS,
     PESOS_RIESGO,
     UMBRALES_SIATA
 )
@@ -27,7 +32,7 @@ from utils.data_processor import (
 
 class TestCargarDatos(unittest.TestCase):
     """
-    Tests para la Funcion 1: cargar_datos().
+    Tests para la Funcion 1: cargar_datos() (ruta simulada, sin internet).
 
     Verifica que los datos tengan el formato correcto y los rangos
     de valores esperados para la realidad de la Comuna 1.
@@ -56,9 +61,15 @@ class TestCargarDatos(unittest.TestCase):
             self.assertIn(col, df.columns, f"Falta la columna de lluvia: {col}")
 
     def test_columnas_de_terreno_presentes(self):
-        """Las variables del terreno son necesarias para derrumbe e inundacion."""
+        """
+        Las variables del terreno son necesarias para derrumbe e inundacion.
+        La pendiente se guarda como tres columnas (min/promedio/max), no una
+        sola "pendiente_grados", porque derrumbe usa el punto mas critico
+        (max) y arrastre usa la inclinacion general del recorrido (promedio).
+        """
         df = self.processor.cargar_datos()
-        for col in ["pendiente_grados", "distancia_quebrada_m",
+        for col in ["pendiente_min_grados", "pendiente_promedio_grados",
+                    "pendiente_max_grados", "distancia_quebrada_m",
                     "permeabilidad_suelo", "cobertura_vegetal_pct"]:
             self.assertIn(col, df.columns, f"Falta columna de terreno: {col}")
 
@@ -73,7 +84,8 @@ class TestCargarDatos(unittest.TestCase):
         """Ningun campo critico puede tener nulos porque romperian el calculo."""
         df = self.processor.cargar_datos()
         criticas = ["barrio", "lluvia_24h_mm", "lluvia_72h_mm",
-                    "pendiente_grados", "distancia_quebrada_m",
+                    "pendiente_min_grados", "pendiente_promedio_grados",
+                    "pendiente_max_grados", "distancia_quebrada_m",
                     "puntos_criticos_basura"]
         for col in criticas:
             nulos = df[col].isnull().sum()
@@ -99,22 +111,172 @@ class TestCargarDatos(unittest.TestCase):
             "Hay barrios con distancia_quebrada_m <= 0"
         )
 
-    def test_pendiente_en_rango_real(self):
-        """Las pendientes de la ladera nororiental estan entre 5 y 60 grados."""
+    def test_pendientes_en_rango_real(self):
+        """
+        Las pendientes de la ladera nororiental estan entre 5 y 70 grados,
+        y dentro de cada barrio el minimo <= promedio <= maximo siempre.
+        """
         df = self.processor.cargar_datos()
+        for col in ["pendiente_min_grados", "pendiente_promedio_grados",
+                    "pendiente_max_grados"]:
+            self.assertTrue(
+                (df[col].between(5, 70)).all(),
+                f"Hay valores de {col} fuera del rango real de la ladera nororiental"
+            )
         self.assertTrue(
-            (df["pendiente_grados"].between(5, 60)).all(),
-            "Hay pendientes fuera del rango real de la ladera nororiental"
+            (df["pendiente_min_grados"] <= df["pendiente_promedio_grados"]).all(),
+            "Hay barrios con pendiente_min_grados > pendiente_promedio_grados"
+        )
+        self.assertTrue(
+            (df["pendiente_promedio_grados"] <= df["pendiente_max_grados"]).all(),
+            "Hay barrios con pendiente_promedio_grados > pendiente_max_grados"
         )
 
     def test_datos_guardados_en_instancia(self):
         """
         Despues de cargar, self.datos debe estar disponible para que
-        los bots puedan consultar sin recargar en cada mensaje.
+        los bots puedan consultar sin recargar en cada mensaje. Tambien
+        debe quedar registrado el origen de los datos (api o simulados).
         """
         self.processor.cargar_datos()
         self.assertIsNotNone(self.processor.datos)
         self.assertIsNotNone(self.processor.ultima_actualizacion)
+        self.assertEqual(
+            self.processor.fuente_datos, "simulados",
+            "Con modo_produccion=False, fuente_datos deberia quedar en 'simulados'"
+        )
+
+    def test_guardar_cache_crea_carpeta_si_no_existe(self):
+        """
+        _guardar_cache debe crear la carpeta data/ sola si no existe, en vez
+        de fallar en silencio con 'No se pudo guardar cache'.
+        """
+        ruta_data  = os.path.join(os.path.dirname(dp_module.__file__), "..", "data")
+        ruta_cache = os.path.join(ruta_data, "cache.csv")
+
+        if os.path.exists(ruta_cache):
+            os.remove(ruta_cache)
+
+        df = self.processor._generar_datos_simulados()
+        self.processor._guardar_cache(df)
+
+        self.assertTrue(
+            os.path.exists(ruta_cache),
+            "_guardar_cache no creo el archivo de cache; la carpeta data/ deberia crearse sola"
+        )
+
+        os.remove(ruta_cache)
+
+
+class TestCargarDesdeAPI(unittest.TestCase):
+    """
+    Tests para _cargar_desde_api(): la lluvia real de Open-Meteo, una
+    coordenada por barrio en una sola peticion.
+
+    Usan unittest.mock para no depender de internet. Las respuestas falsas
+    siguen el formato real documentado por Open-Meteo para multiples
+    coordenadas: una lista de resultados en el mismo orden en que se
+    pidieron las coordenadas.
+    """
+
+    def setUp(self):
+        self.processor = DataProcessor(modo_produccion=True)
+
+    def test_coordenadas_cubren_todos_los_barrios(self):
+        """
+        _cargar_desde_api arma las listas de lat/lon recorriendo
+        BARRIOS_COMUNA_1; si a algun barrio le falta coordenada, revienta
+        con KeyError al construir la peticion.
+        """
+        faltantes = [b for b in BARRIOS_COMUNA_1 if b not in COORDENADAS_BARRIOS]
+        self.assertEqual(
+            faltantes, [],
+            f"Barrios sin coordenadas en COORDENADAS_BARRIOS: {faltantes}"
+        )
+
+    @patch("utils.data_processor.requests.get")
+    def test_resultados_se_asignan_al_barrio_correcto(self, mock_get):
+        """
+        Cada barrio debe terminar con SU propio dato de lluvia (no el de
+        otro barrio, ni un promedio de toda la comuna), respetando el orden
+        en que Open-Meteo devuelve la lista de resultados.
+        """
+        horas_totales = 80
+        horas = pd.date_range("2026-09-01", periods=horas_totales, freq="h")
+        horas_iso = [h.strftime("%Y-%m-%dT%H:%M") for h in horas]
+
+        resultados_falsos = []
+        for i, barrio in enumerate(BARRIOS_COMUNA_1):
+            precip = [0.1] * horas_totales
+            # Marca las ultimas 24h con un valor unico por barrio, para
+            # poder verificar que cada uno recibe su propio dato.
+            for h in range(horas_totales - 24, horas_totales):
+                precip[h] = float(i + 1)
+            resultados_falsos.append({
+                "latitude":  COORDENADAS_BARRIOS[barrio][0],
+                "longitude": COORDENADAS_BARRIOS[barrio][1],
+                "hourly": {"time": horas_iso, "precipitation": precip}
+            })
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = resultados_falsos
+        mock_get.return_value = mock_resp
+
+        df = self.processor._cargar_desde_api()
+
+        for i, barrio in enumerate(BARRIOS_COMUNA_1):
+            fila = df.iloc[i]
+            self.assertEqual(fila["barrio"], barrio)
+            self.assertAlmostEqual(
+                fila["lluvia_24h_mm"], float(i + 1) * 24, places=1,
+                msg=f"{barrio} no recibio su propio dato de lluvia 24h"
+            )
+
+    @patch("utils.data_processor.requests.get")
+    def test_ventana_24h_cuenta_exactamente_24_horas(self, mock_get):
+        """
+        Regresion: la ventana de 24h no debe incluir una hora de mas.
+        Un slice con .loc[fin-24h:] es inclusivo en ambos extremos y
+        terminaba sumando 25 horas en vez de 24 (se corrigio filtrando
+        con index > fin-24h).
+        """
+        horas = pd.date_range("2026-09-01", periods=48, freq="h")
+        horas_iso = [h.strftime("%Y-%m-%dT%H:%M") for h in horas]
+        precip = [1.0] * 48  # 1mm cada hora: facil de verificar a mano
+
+        resultados_falsos = [{
+            "latitude":  COORDENADAS_BARRIOS[b][0],
+            "longitude": COORDENADAS_BARRIOS[b][1],
+            "hourly": {"time": horas_iso, "precipitation": precip}
+        } for b in BARRIOS_COMUNA_1]
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = resultados_falsos
+        mock_get.return_value = mock_resp
+
+        df = self.processor._cargar_desde_api()
+
+        self.assertTrue(
+            (df["lluvia_24h_mm"] == 24.0).all(),
+            f"La ventana de 24h no sumo exactamente 24 horas: {df['lluvia_24h_mm'].tolist()}"
+        )
+
+    @patch("utils.data_processor.requests.get")
+    def test_fallback_a_simulados_si_api_falla(self, mock_get):
+        """
+        Si Open-Meteo no responde (sin internet, timeout, error HTTP),
+        cargar_datos() debe caer a datos simulados en vez de propagar la
+        excepcion, y marcar self.fuente_datos como 'simulados'.
+        """
+        mock_get.side_effect = Exception("Sin conexion a internet")
+
+        df = self.processor.cargar_datos()
+
+        self.assertIsInstance(df, pd.DataFrame)
+        self.assertEqual(len(df), len(BARRIOS_COMUNA_1))
+        self.assertEqual(self.processor.fuente_datos, "simulados")
 
 
 class TestCalcularRiesgoGeneral(unittest.TestCase):
@@ -315,10 +477,10 @@ class TestConsultasParaBots(unittest.TestCase):
         )
 
     def test_buscar_barrio_coincidencia_parcial(self):
-        """'manrique' debe encontrar 'Manrique Central N1' o 'N2'."""
-        resultado = self.processor.buscar_barrio("manrique")
-        self.assertIsNotNone(resultado, "No encontro ningun barrio con 'manrique'")
-        self.assertIn("Manrique", resultado["barrio"])
+        """'santo domingo' debe encontrar 'Santo Domingo Savio N1' o 'N2'."""
+        resultado = self.processor.buscar_barrio("santo domingo")
+        self.assertIsNotNone(resultado, "No encontro ningun barrio con 'santo domingo'")
+        self.assertIn("Santo Domingo", resultado["barrio"])
 
     def test_buscar_barrio_insensible_a_mayusculas(self):
         """'GRANIZAL', 'granizal' y 'Granizal' deben encontrar el mismo barrio."""

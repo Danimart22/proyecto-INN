@@ -387,6 +387,7 @@ class DataProcessor:
         """
         ruta = os.path.join(os.path.dirname(__file__), "..", "data", "cache.csv")
         try:
+            os.makedirs(os.path.dirname(ruta), exist_ok=True)
             df.to_csv(ruta, index=False)
         except Exception as e:
             logger.warning(f"No se pudo guardar cache: {e}")

@@ -286,7 +286,7 @@ def mostrar_consulta_barrio(processor: DataProcessor):
     st.subheader("Consulta por barrio")
     nombre = st.text_input(
         "Escribe el nombre del barrio",
-        placeholder="Ej: granizal, manrique, la francia...",
+        placeholder="Ej: granizal, Santo Domingo Savio, el compromiso...",
         key="busqueda_barrio"
     )
 
